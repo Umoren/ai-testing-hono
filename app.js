@@ -5,6 +5,15 @@ import { z } from 'zod'
 
 const app = new Hono()
 
+// Model configuration - allows injection for testing
+const getModel = () => {
+    // In test environment, you can set global.testModel to inject mock
+    if (process.env.NODE_ENV === 'test' && global.testModel) {
+        return global.testModel
+    }
+    return openai('gpt-4o')
+}
+
 // Health check endpoint
 app.get('/', (c) => {
     return c.json({ message: 'Hono AI Testing Server with AI is running!' })
@@ -16,7 +25,7 @@ app.post('/chat', async (c) => {
 
     try {
         const result = await streamText({
-            model: openai('gpt-4o'),
+            model: getModel(),
             prompt: message,
         })
 
@@ -42,7 +51,7 @@ app.post('/generate-profile', async (c) => {
 
     try {
         const result = await generateObject({
-            model: openai('gpt-4o'),
+            model: getModel(),
             schema: UserProfileSchema,
             prompt: prompt,
         })
@@ -76,7 +85,7 @@ app.post('/chat-with-tools', async (c) => {
 
     try {
         const result = await streamText({
-            model: openai('gpt-4o'),
+            model: getModel(),
             prompt: message,
             tools: {
                 getWeather: weatherTool,
@@ -92,3 +101,20 @@ app.post('/chat-with-tools', async (c) => {
 })
 
 export default app
+
+// Server setup (if running directly)
+if (import.meta.url === `file://${process.argv[1]}`) {
+    const { serve } = await import('@hono/node-server')
+    const port = 3000
+
+    try {
+        serve({
+            fetch: app.fetch,
+            port
+        })
+        console.log(`Server started successfully on http://localhost:${port}`)
+    } catch (error) {
+        console.error('Failed to start server:', error)
+        process.exit(1)
+    }
+}
