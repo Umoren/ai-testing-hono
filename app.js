@@ -19,23 +19,26 @@ app.get('/', (c) => {
     return c.json({ message: 'Hono AI Testing Server with AI is running!' })
 })
 
-// Simple chat streaming endpoint
+
 app.post('/chat', async (c) => {
     const { message } = await c.req.json()
 
+    if (!message) {
+        return c.json({ error: 'Message is required' }, 400)
+    }
+
     try {
         const result = await streamText({
-            model: getModel(),
+            model: openai('gpt-4o'),
             prompt: message,
         })
-
-        // Convert to HTTP streaming response
         return result.toDataStreamResponse()
     } catch (error) {
         console.error('AI Error:', error)
         return c.json({ error: 'AI service unavailable' }, 500)
     }
 })
+
 
 // Profile generation (structured data)
 const UserProfileSchema = z.object({
