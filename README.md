@@ -2,12 +2,12 @@
 
 ## What We Built
 
-A complete testing framework for streaming AI applications that tests the **AI logic directly** using AI SDK's built-in mock providers instead of complex HTTP mocking.
+A complete testing framework for streaming AI applications that tests **AI logic directly** using AI SDK's built-in mock providers instead of complex HTTP mocking.
 
 ### Architecture
 
 ```
-HTTP Request → Hono Web Server → AI SDK (streamText/generateObject) → AI SDK Mock Providers
+HTTP Request → Hono Web Server → AI SDK (streamText/generateObject) → MockLanguageModelV1
 ```
 
 Instead of mocking HTTP requests to OpenAI, we inject mock models directly into AI SDK calls for cleaner, more reliable testing.
@@ -21,231 +21,173 @@ npm install
 # Set up environment (optional - mocks work without API key)
 echo "OPENAI_API_KEY=your-key-here" > .env
 
-# Run all streaming tests
+# Run all tests
 npm test
 
 # Start development server
 npm run dev
 ```
 
-## Project Structure & File Details
+## Project Structure
 
 ```
 ai-testing-hono/
-├── app.js              # Complete Hono app with all AI endpoints
-├── app.test.js         # Complete test suite with AI SDK mock providers
+├── app.js              # Hono app with dependency injection
+├── app.test.js         # Complete test suite with AI SDK mocks
 ├── package.json
 ├── vitest.config.js
 └── README.md
 ```
 
-**Simplified to just 2 core files:**
-- **`app.js`** - All AI endpoints with streaming and tool calling
-- **`app.test.js`** - Complete test suite using AI SDK testing utilities
+## Key Files
 
-### `app.js` - **Complete AI Integration**
+### `app.js` - **Dependency Injection Architecture**
 ```javascript
-// All endpoints use real AI SDK calls
-app.post('/chat', async (c) => {
-  const { message } = await c.req.json()
+// Factory function for dependency injection
+export function createApp(options = {}) {
+    const app = new Hono()
 
-  const result = await streamText({
-    model: openai('gpt-4o'),
-    prompt: message,
-  })
+    // Use provided models or default to OpenAI
+    const chatModel = options.chatModel || openai('gpt-4o')
+    const objectModel = options.objectModel || openai('gpt-4o')
 
-  return result.toDataStreamResponse() // AI SDK handles streaming
-})
+    app.post('/chat', async (c) => {
+        const result = await streamText({
+            model: chatModel,  // Injected model
+            prompt: message,
+        })
+        return result.toDataStreamResponse()
+    })
+
+    return app
+}
+
+// Default export for production
+export default createApp()
 ```
 
-**What it does**: Defines all AI-powered endpoints with proper streaming and tool calling integration using AI SDK.
+**Key Innovation**: Factory function allows injecting mock models for testing while using real OpenAI in production.
 
 ### `app.test.js` - **AI SDK Mock Provider Testing**
 ```javascript
-// Import AI SDK testing utilities - much simpler than MSW
-import { MockLanguageModelV1, convertArrayToReadableStream } from 'ai/test'
+import { MockLanguageModelV1, simulateReadableStream } from 'ai/test'
+import { createApp } from './app.js'
 
-// Create mock model with simple data structure
-function createMockModel(mockData) {
-    return new MockLanguageModelV1({
-        doStream: async ({ prompt }) => {
-            // Pattern matching with automatic AI SDK format handling
-            const words = response.content.split(' ')
-            const textDeltas = words.map(word => ({
-                type: 'text-delta',
-                textDelta: word + ' '
-            }))
-
-            return {
-                stream: convertArrayToReadableStream(textDeltas),
-                rawCall: { rawPrompt: prompt, rawSettings: {} }
-            }
-        }
+test('should stream creative chat responses', async () => {
+    const mockModel = new MockLanguageModelV1({
+        doStream: async () => ({
+            stream: simulateReadableStream({
+                chunks: [
+                    { type: 'text-delta', textDelta: 'Once ' },
+                    { type: 'text-delta', textDelta: 'upon ' },
+                    { type: 'text-delta', textDelta: 'a ' },
+                    { type: 'text-delta', textDelta: 'time' },
+                    {
+                        type: 'finish',
+                        finishReason: 'stop',
+                        usage: { completionTokens: 4, promptTokens: 3 },
+                    },
+                ],
+            }),
+            rawCall: { rawPrompt: null, rawSettings: {} },
+        }),
     })
-}
-```
 
-**What it does**: Uses AI SDK's built-in testing utilities to mock AI responses without complex HTTP mocking. AI SDK handles all format conversion and streaming automatically.
+    const app = createApp({ chatModel: mockModel })
 
-### **Key Improvement: No More Manual JSON Crafting**
-```javascript
-// BEFORE: Complex MSW HTTP mocking (100+ lines)
-function createStreamChunk(content, isLast = false, toolCall = null) {
-    const chunk = {
-        id: 'chatcmpl-test',
-        object: 'chat.completion.chunk',
-        // ... 50+ lines of manual OpenAI JSON format
-    }
-    return `data: ${JSON.stringify(chunk)}\n\n`
-}
+    const response = await app.request('/chat', {
+        method: 'POST',
+        body: JSON.stringify({ message: 'Tell me a creative story' }),
+        headers: { 'Content-Type': 'application/json' }
+    })
 
-// AFTER: Simple AI SDK mock (5 lines)
-const textDeltas = words.map(word => ({
-    type: 'text-delta',
-    textDelta: word + ' '
-}))
-return { stream: convertArrayToReadableStream(textDeltas) }
-```
-
-**What changed**: AI SDK testing utilities handle all the complex JSON formatting, streaming protocol, and tool calling automatically.
-
-### `vitest.config.js` - **Simplified Configuration**
-```javascript
-// No external setup needed - AI SDK mocks are self-contained
-export default defineConfig({
-  test: {
-    environment: 'node'
-  }
+    expect(response.status).toBe(200)
+    const fullResponse = await streamToText(response)
+    expect(fullResponse).toContain('Once')
 })
 ```
 
-**What it does**: Minimal test configuration since AI SDK mock providers don't require global setup like MSW.
+**What it does**: Uses AI SDK's testing utilities to inject mock models that return predefined responses in the correct AI SDK format.
 
 ## Test Results
 ```bash
 ✓ Health Check > should return health status
-✓ AI SDK Mock Provider Tests > should test AI streaming directly with mock model
-✓ AI SDK Mock Provider Tests > should test AI tool calling directly with mock model
-✓ AI SDK Mock Provider Tests > should test structured generation directly
-✓ End-to-End Hono Integration Tests > should stream creative chat responses via HTTP
-✓ End-to-End Hono Integration Tests > should handle tool calling via HTTP
-✓ End-to-End Hono Integration Tests > should generate structured profiles via HTTP
-✓ End-to-End Hono Integration Tests > should handle errors gracefully
-✓ End-to-End Hono Integration Tests > should handle malformed JSON requests
+✓ AI Tests > should stream creative chat responses
+✓ AI Tests > should handle simple greetings
+✓ AI Tests > should handle tool calling
+✓ AI Tests > should generate structured profiles
+✓ AI Tests > should handle malformed JSON
+✓ AI Tests > should handle missing message content
+✓ AI Tests > should handle missing prompt for profile generation
 
 Test Files  1 passed (1)
-     Tests  9 passed (9)
+     Tests  8 passed (8)
 ```
 
 ## Key Features
 
-### 1. **AI SDK Mock Provider Testing**
-- Direct AI logic testing without HTTP layer
-- AI SDK handles all format conversion automatically
-- Built-in streaming simulation with proper timing
-- No manual JSON crafting required
+### 1. **Dependency Injection Pattern**
+- Factory function `createApp(options)` accepts models as parameters
+- Production: `createApp()` uses real OpenAI models
+- Testing: `createApp({ chatModel: mockModel })` uses mocks
+- Clean separation between business logic and AI provider
 
-### 2. **Streaming Text Responses**
+### 2. **AI SDK Mock Providers**
+- Use `MockLanguageModelV1` from `ai/test` package
+- No HTTP mocking complexity - test at the right abstraction level
+- AI SDK handles all format conversion automatically
+- Built-in streaming simulation with proper chunk timing
+
+### 3. **Streaming Text Responses**
 - Real HTTP streaming endpoints using Hono
-- AI SDK `streamText` integration with `toDataStreamResponse()`
+- AI SDK `streamText` with `toDataStreamResponse()`
 - Mock providers return proper AI SDK stream format
 - Automatic word-by-word streaming simulation
 
-### 3. **Tool Calling Support**
-- Multi-step AI workflows with tool execution
-- Simplified tool call mocking with AI SDK testing utilities
-- No complex JSON tool call structure needed
-- Automatic tool call protocol handling
-
-### 4. **Structured Data Generation**
-- Non-streaming endpoints using `generateObject`
-- Zod schema validation for type safety
-- Mock providers handle structured output automatically
-
-### 5. **Two-Layer Testing Strategy**
-- **Unit level**: Test AI logic directly with mock models
-- **Integration level**: Test complete HTTP endpoints
-
-## Tool Calling Implementation
-
-### How We Built Tool Calling
-
+### 4. **Tool Calling Support**
 ```javascript
-// 1. Define tools with Zod schemas (same as before)
-const weatherTool = {
-    description: 'Get current weather for a location',
-    parameters: z.object({
-        location: z.string().describe('The city and state, e.g. San Francisco, CA'),
-    }),
-    execute: async ({ location }) => {
-        return {
-            location,
-            temperature: '72°F',
-            condition: 'Sunny',
-            humidity: '65%'
-        }
-    },
-}
-
-// 2. Pass tools to streamText (same as before)
-app.post('/chat-with-tools', async (c) => {
-    const { message } = await c.req.json()
-
-    const result = await streamText({
-        model: openai('gpt-4o'),
-        prompt: message,
-        tools: { getWeather: weatherTool },
-        maxSteps: 5,
-    })
-
-    return result.toDataStreamResponse()
-})
-```
-
-### Tool Call Testing Strategy (Much Simpler Now)
-
-```javascript
-// 3. Mock tool calls with AI SDK testing utilities
 const mockModel = new MockLanguageModelV1({
-    doStream: async ({ prompt }) => {
-        return {
-            stream: convertArrayToReadableStream([
+    doStream: async () => ({
+        stream: simulateReadableStream({
+            chunks: [
                 {
                     type: 'tool-call',
-                    toolCallId: 'call_test',
+                    toolCallType: 'function',
+                    toolCallId: 'call_1',
                     toolName: 'getWeather',
-                    args: { location: 'San Francisco, CA' }
+                    args: { location: 'San Francisco, CA' },
                 },
-                {
-                    type: 'tool-result',
-                    toolCallId: 'call_test',
-                    result: 'Weather data here'
-                },
-                {
-                    type: 'text-delta',
-                    textDelta: 'The weather is sunny!'
-                }
-            ])
-        }
-    }
+                { type: 'text-delta', textDelta: 'The weather is 72°F' },
+                { type: 'finish', finishReason: 'stop' },
+            ],
+        }),
+        rawCall: { rawPrompt: null, rawSettings: {} },
+    }),
 })
-
-// 4. Test tool calls directly - no HTTP needed
-const result = await streamText({
-    model: mockModel,
-    prompt: 'What is the weather?',
-    tools: { getWeather: weatherTool }
-})
-
-const toolCalls = await result.toolCalls
-expect(toolCalls[0].toolName).toBe('getWeather')
 ```
 
-**Benefits over manual mocking:**
-- **90% less code** - AI SDK handles tool call protocol
-- **No JSON knowledge** - Simple object structure
-- **Built-in validation** - AI SDK ensures proper format
-- **Future-proof** - Works when tool calling format changes
+### 5. **Structured Data Generation**
+```javascript
+const mockModel = new MockLanguageModelV1({
+    defaultObjectGenerationMode: 'json',  // Required for generateObject
+    doGenerate: async () => ({
+        text: JSON.stringify({
+            name: 'Luna Martinez',
+            age: 28,
+            occupation: 'Digital Artist'
+        }),
+        usage: { completionTokens: 50, promptTokens: 10 },
+        finishReason: 'stop',
+        rawCall: { rawPrompt: null, rawSettings: {} },
+    }),
+})
+```
+
+### 6. **Proper Error Handling**
+- JSON parsing errors caught and returned as 400
+- Missing required fields validated
+- AI SDK errors caught and returned as 500
+- Framework limitations handled gracefully
 
 ## API Endpoints
 
@@ -269,184 +211,153 @@ curl -X POST http://localhost:3000/chat-with-tools \
 Returns structured user profiles
 ```bash
 curl -X POST http://localhost:3000/generate-profile \
-  -H "Content-Type: application/json" \
+  -H "Content-Type": "application/json" \
   -d '{"prompt": "Generate a creative artist profile"}'
 ```
 
-## Testing Examples
+## Architecture Benefits
 
-### Direct AI Logic Testing (New Approach)
+### Why MockLanguageModelV1 > MSW HTTP Mocking
+
+| Aspect | HTTP Mocking (MSW) | AI SDK Mocks |
+|--------|-------------------|--------------|
+| **Abstraction Level** | Network layer | Business logic layer |
+| **Code Complexity** | 200+ lines | 50+ lines |
+| **Format Knowledge** | Must know OpenAI JSON | Simple object structure |
+| **Maintenance** | Breaks when API changes | Future-proof |
+| **Test Focus** | HTTP transport details | AI application logic |
+| **Setup Complexity** | Global server setup | Per-test model injection |
+
+### Before vs After
+
+**Before (MSW):**
 ```javascript
-test('should test AI streaming directly with mock model', async () => {
-    const mockModel = createMockModel({
-        'creative story': {
-            type: 'text',
-            content: 'Once upon a time in a magical kingdom'
-        }
-    })
+// Complex HTTP response crafting
+function createOpenAIResponse(content, isStreaming) {
+    if (isStreaming) {
+        const chunks = content.split(' ').map(word =>
+            `data: {"choices":[{"delta":{"content":"${word} "}}]}\n\n`
+        ).join('') + 'data: [DONE]\n\n'
 
-    // Test AI SDK directly - no HTTP layer
-    const result = await streamText({
-        model: mockModel,
-        prompt: 'Tell me a creative story'
-    })
-
-    // Read AI SDK stream directly
-    const chunks = []
-    for await (const chunk of result.textStream) {
-        chunks.push(chunk)
+        return new HttpResponse(chunks, {
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' }
+        })
     }
-
-    const fullText = chunks.join('')
-    expect(fullText).toContain('Once upon a time')
-})
-```
-
-### Tool Calling Test (Simplified)
-```javascript
-test('should test AI tool calling directly', async () => {
-    const mockModel = createMockModel({
-        'weather': {
-            type: 'tool_call',
-            tool_name: 'getWeather',
-            tool_args: { location: 'San Francisco, CA' },
-            final_response: 'The weather is 72°F and sunny.'
-        }
-    })
-
-    const result = await streamText({
-        model: mockModel,
-        prompt: 'What is the weather?',
-        tools: { getWeather: weatherTool }
-    })
-
-    // Test tool calls directly - AI SDK handles the protocol
-    const toolCalls = await result.toolCalls
-    expect(toolCalls[0].toolName).toBe('getWeather')
-    expect(toolCalls[0].args.location).toBe('San Francisco, CA')
-})
-```
-
-### HTTP Integration Test (Still Supported)
-```javascript
-test('should stream creative chat responses via HTTP', async () => {
-    const response = await testEndpointWithMock('/chat',
-        { message: 'Tell me a creative story' },
-        mockData
-    )
-
-    expect(response.status).toBe(200)
-    const fullResponse = await streamToText(response)
-    expect(fullResponse).toContain('Once upon a time')
-})
-```
-
-## Mock Data Format (Simplified)
-
-### Text Streaming
-```javascript
-{
-  'creative story': {
-    type: 'text',
-    content: 'Once upon a time in a magical kingdom'
-  }
+    // ... 50+ more lines
 }
 ```
 
-### Tool Calling
+**After (AI SDK Mocks):**
 ```javascript
-{
-  'weather': {
-    type: 'tool_call',
-    tool_name: 'getWeather',
-    tool_args: { location: 'San Francisco, CA' },
-    final_response: 'The weather is currently 72°F and sunny.'
-  }
-}
+// Simple AI SDK format
+const mockModel = new MockLanguageModelV1({
+    doStream: async () => ({
+        stream: simulateReadableStream({
+            chunks: [
+                { type: 'text-delta', textDelta: 'Hello ' },
+                { type: 'text-delta', textDelta: 'world' },
+                { type: 'finish', finishReason: 'stop' },
+            ],
+        }),
+        rawCall: { rawPrompt: null, rawSettings: {} },
+    }),
+})
 ```
 
-### Structured Generation
+## Key Technical Insights
+
+1. **Test the right abstraction level** - Mock AI models, not HTTP transport
+2. **Dependency injection** enables clean testing without global state
+3. **AI SDK handles complexity** - No manual format crafting required
+4. **Framework limitations are OK** - Accept realistic error behavior
+5. **Business logic focus** - Test what your app actually does with AI responses
+
+## Common Patterns
+
+### Mock Model for Streaming Text
 ```javascript
-{
-  'creative artist': {
-    name: 'Luna Martinez',
-    age: 28,
-    occupation: 'Digital Artist',
-    personality: ['imaginative', 'passionate', 'detail-oriented'],
-    backstory: 'Luna discovered her artistic passion while studying computer science.'
-  }
-}
+const mockModel = new MockLanguageModelV1({
+    doStream: async () => ({
+        stream: simulateReadableStream({
+            chunks: [
+                { type: 'text-delta', textDelta: 'Your ' },
+                { type: 'text-delta', textDelta: 'response ' },
+                { type: 'text-delta', textDelta: 'here' },
+                { type: 'finish', finishReason: 'stop', usage: { ... } },
+            ],
+        }),
+        rawCall: { rawPrompt: null, rawSettings: {} },
+    }),
+})
 ```
 
-## How AI SDK Mock Providers Work
-
-1. **Mock Model Creation**: Use `MockLanguageModelV1` instead of real OpenAI model
-2. **Pattern Matching**: Analyze prompt content to determine response type
-3. **Stream Generation**: Use `convertArrayToReadableStream` with AI SDK format
-4. **Automatic Formatting**: AI SDK handles all JSON/streaming protocol details
-5. **Tool Call Protocol**: Simple object structure, no manual JSON needed
-6. **Format Conversion**: AI SDK automatically converts mock → stream → HTTP response
-
-## AI SDK Stream Format (Handled Automatically)
-
-The AI SDK uses its own format, but now we don't need to know it:
-
+### Mock Model for Tool Calling
 ```javascript
-// We provide simple structure:
-{ type: 'text-delta', textDelta: 'Hello ' }
-
-// AI SDK automatically converts to:
-0:"Hello "     // Text chunk
-e:{"finishReason":"stop"}    // End frame
-d:{"finishReason":"stop"}    // Done
+const mockModel = new MockLanguageModelV1({
+    doStream: async () => ({
+        stream: simulateReadableStream({
+            chunks: [
+                {
+                    type: 'tool-call',
+                    toolCallType: 'function',
+                    toolCallId: 'call_1',
+                    toolName: 'getWeather',
+                    args: { location: 'San Francisco' },
+                },
+                { type: 'text-delta', textDelta: 'Based on the weather data...' },
+                { type: 'finish', finishReason: 'stop' },
+            ],
+        }),
+        rawCall: { rawPrompt: null, rawSettings: {} },
+    }),
+})
 ```
 
-**Important**: With AI SDK mock providers, you don't need to know the streaming format - it's handled automatically.
-
-## Key Technical Insights (Updated)
-
-1. **AI SDK mock providers** are better than HTTP mocking - test logic, not protocols
-2. **Direct AI testing** is more reliable than end-to-end HTTP testing
-3. **Format handling** is automatic - no manual JSON crafting needed
-4. **Tool calling** is simplified to basic object structure
-5. **Pattern matching** still works but with much less code
-6. **Two-layer testing** gives both unit and integration coverage
-
+### Mock Model for Structured Generation
+```javascript
+const mockModel = new MockLanguageModelV1({
+    defaultObjectGenerationMode: 'json',
+    doGenerate: async () => ({
+        text: JSON.stringify({
+            name: 'Test User',
+            age: 25
+        }),
+        usage: { completionTokens: 20, promptTokens: 10 },
+        finishReason: 'stop',
+        rawCall: { rawPrompt: null, rawSettings: {} },
+    }),
+})
+```
 
 ## Troubleshooting
 
-### Mock not returning expected data?
-```javascript
-// ❌ Wrong - old MSW approach
-expect(response).toContain('data: {')
-
-// ✅ Right - test AI logic directly
-const result = await streamText({ model: mockModel, prompt: 'test' })
-const text = await result.text
-expect(text).toContain('expected content')
-```
+### "Model does not have a default object generation mode"
+Add `defaultObjectGenerationMode: 'json'` to your MockLanguageModelV1 for `generateObject` tests.
 
 ### Tool calls not working?
+Remove `tool-result` chunks - AI SDK handles tool execution internally. Only provide `tool-call` chunks.
+
+### JSON parsing errors in tests?
+Framework auto-parses based on Content-Type. Either accept 500 status or test with different content-type.
+
+### Tests failing after AI SDK updates?
+MockLanguageModelV1 is designed to be forward-compatible. Check if chunk format changed in AI SDK docs.
+
+## Production vs Testing
+
+### Production (`npm start`)
 ```javascript
-// ✅ Use AI SDK testing format
-{
-  type: 'tool_call',
-  tool_name: 'getWeather',
-  tool_args: { location: 'SF' },
-  final_response: 'Weather data'
-}
+// Uses real OpenAI
+const app = createApp()  // No options = real models
 ```
 
-### Want to test HTTP endpoints?
+### Testing (`npm test`)
 ```javascript
-// Use testEndpointWithMock helper function
-const response = await testEndpointWithMock('/chat',
-  { message: 'test' },
-  mockData
-)
+// Uses mocks
+const app = createApp({
+    chatModel: mockModel,
+    objectModel: mockModel
+})
 ```
 
-### Tests running slow?
-- AI SDK mock providers are much faster than HTTP mocking
-- No network delays or complex stream processing
-- Pattern matching happens in memory, not over HTTP
+This architecture gives you the best of both worlds: real AI in production, fast reliable tests in development.
